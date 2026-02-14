@@ -1,5 +1,6 @@
-use serde::{Deserialize, Serialize};
+use serde::{de::{self, Deserializer, MapAccess, Visitor}, Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt;
 
 pub mod defaults;
 pub mod parser;
@@ -230,12 +231,82 @@ pub struct OrderTypeEnabled {
     pub enabled: bool,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct TimeInForceConfig {
     pub gtc: TifEnabled,
     pub ioc: TifEnabled,
     pub fok: TifEnabled,
     pub day: TifEnabled,
+}
+
+impl<'de> Deserialize<'de> for TimeInForceConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct TimeInForceVisitor;
+
+        impl<'de> Visitor<'de> for TimeInForceVisitor {
+            type Value = TimeInForceConfig;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a map with time-in-force settings (gtc, ioc, fok, day or GTC, IOC, FOK, DAY)")
+            }
+
+            fn visit_map<V>(self, mut map: V) -> Result<TimeInForceConfig, V::Error>
+            where
+                V: MapAccess<'de>,
+            {
+                let mut gtc = None;
+                let mut ioc = None;
+                let mut fok = None;
+                let mut day = None;
+
+                while let Some(key) = map.next_key::<String>()? {
+                    let key_lower = key.to_lowercase();
+                    match key_lower.as_str() {
+                        "gtc" => {
+                            if gtc.is_some() {
+                                return Err(serde::de::Error::duplicate_field("gtc/GTC"));
+                            }
+                            gtc = Some(map.next_value()?);
+                        }
+                        "ioc" => {
+                            if ioc.is_some() {
+                                return Err(serde::de::Error::duplicate_field("ioc/IOC"));
+                            }
+                            ioc = Some(map.next_value()?);
+                        }
+                        "fok" => {
+                            if fok.is_some() {
+                                return Err(serde::de::Error::duplicate_field("fok/FOK"));
+                            }
+                            fok = Some(map.next_value()?);
+                        }
+                        "day" => {
+                            if day.is_some() {
+                                return Err(serde::de::Error::duplicate_field("day/DAY"));
+                            }
+                            day = Some(map.next_value()?);
+                        }
+                        _ => {
+                            // Skip unknown fields
+                            let _: serde::de::IgnoredAny = map.next_value()?;
+                        }
+                    }
+                }
+
+                Ok(TimeInForceConfig {
+                    gtc: gtc.ok_or_else(|| serde::de::Error::missing_field("gtc/GTC"))?,
+                    ioc: ioc.ok_or_else(|| serde::de::Error::missing_field("ioc/IOC"))?,
+                    fok: fok.ok_or_else(|| serde::de::Error::missing_field("fok/FOK"))?,
+                    day: day.ok_or_else(|| serde::de::Error::missing_field("day/DAY"))?,
+                })
+            }
+        }
+
+        deserializer.deserialize_map(TimeInForceVisitor)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

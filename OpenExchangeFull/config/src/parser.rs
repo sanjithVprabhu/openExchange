@@ -298,7 +298,7 @@ pub fn generate_default_config() -> MasterConfig {
 }
 
 #[instrument]
-pub fn save_config<P: AsRef<Path>>(config: &MasterConfig, path: P) -> Result<()> {
+pub fn save_config<P: AsRef<Path> + std::fmt::Debug>(config: &MasterConfig, path: P) -> Result<()> {
     let path = path.as_ref();
     info!("Saving configuration to: {:?}", path);
 
