@@ -1,0 +1,250 @@
+# OpenExchange Configuration File
+# This is a fully populated example configuration with all defaults
+# You can customize this for your white-label exchange
+
+exchange:
+  name: "My Exchange"
+  description: "A white-label crypto options exchange"
+  version: "1.0.0"
+  mode: virtual  # Options: production, virtual, both
+  trading_hours:
+    type: "24/7"
+
+instrument:
+  supported_assets:
+    - symbol: "BTC"
+      name: "Bitcoin"
+      decimals: 8
+      contract_size: 0.01
+      min_order_size: 1
+      tick_size: 0.5
+      price_decimals: 2
+      enabled: true
+    
+    - symbol: "ETH"
+      name: "Ethereum"
+      decimals: 18
+      contract_size: 0.1
+      min_order_size: 1
+      tick_size: 0.1
+      price_decimals: 2
+      enabled: true
+
+  settlement_currencies:
+    - symbol: "USDT"
+      name: "Tether"
+      decimals: 6
+      enabled: true
+      primary: true
+
+market_data:
+  providers:
+    - name: "binance"
+      type: "websocket"  # Options: websocket, grpc, rest
+      enabled: true
+      primary: true
+      streams:
+        - name: "BTC"
+          endpoint: "wss://stream.binance.com:9443/ws/btcusdt@ticker"
+          symbol: "BTC"
+          ticker: "BTCUSDT"
+        - name: "ETH"
+          endpoint: "wss://stream.binance.com:9443/ws/ethusdt@ticker"
+          symbol: "ETH"
+          ticker: "ETHUSDT"
+      reconnect_delay_seconds: 5
+      max_reconnect_attempts: 10
+      heartbeat_interval_seconds: 30
+      connection_timeout_seconds: 60
+      auth:
+        type: "api_key"
+        api_key: "${BINANCE_API_KEY}"
+        api_secret: "${BINANCE_API_SECRET}"
+  
+  fallback_strategy: "median"  # Options: median, average, high, low
+  max_price_age_seconds: 10
+  stale_price_action: "halt_trading"  # Options: halt_trading, use_fallback, continue
+
+expiry:
+  daily:
+    enabled: true
+    count: 7
+    expiry_time_utc: "08:00"
+  
+  weekly:
+    enabled: true
+    count: 4
+    expiry_time_utc: "08:00"
+  
+  monthly:
+    enabled: true
+    count: 6
+    expiry_time_utc: "08:00"
+  
+  quarterly:
+    enabled: true
+    count: 4
+    expiry_time_utc: "08:00"
+  
+  yearly:
+    enabled: false
+    count: 2
+    expiry_time_utc: "08:00"
+
+storage:
+  type: "postgres"  # Options: postgres, supabase
+  
+  postgres:
+    host: "${INSTRUMENT_DB_HOST}"
+    port: 5432
+    database: "instruments"
+    user: "${INSTRUMENT_DB_USER}"
+    password: "${INSTRUMENT_DB_PASSWORD}"
+    ssl_mode: "require"
+    max_connections: 20
+    connection_timeout_seconds: 30
+    idle_timeout_seconds: 600
+  
+  supabase:
+    url: "${SUPABASE_URL}"
+    anon_key: "${SUPABASE_ANON_KEY}"
+    service_role_key: "${SUPABASE_SERVICE_KEY}"
+  
+  cache:
+    enabled: true
+    ttl_seconds: 300
+    max_entries: 10000
+
+oms:
+  order_types:
+    limit:
+      enabled: true
+    market:
+      enabled: true
+    stop_limit:
+      enabled: false  # Not supported in v1.0.0
+    stop_market:
+      enabled: false  # Not supported in v1.0.0
+  
+  time_in_force:
+    GTC:  # Good Till Cancel
+      enabled: true
+    IOC:  # Immediate or Cancel
+      enabled: true
+    FOK:  # Fill or Kill
+      enabled: true
+    DAY:  # Day order
+      enabled: false
+  
+  limits:
+    max_open_orders_per_user: 100
+    max_order_size_contracts: 10000
+    min_order_size_contracts: 1
+    max_price_deviation_percent: 20.0
+  
+  orderbook:
+    depth_levels: 50
+    update_frequency_ms: 100
+  
+  storage:
+    type: "postgres"
+    postgres:
+      host: "${OMS_DB_HOST}"
+      port: 5432
+      database: "orders"
+      user: "${OMS_DB_USER}"
+      password: "${OMS_DB_PASSWORD}"
+      ssl_mode: "require"
+      max_connections: 50
+      connection_timeout_seconds: 30
+      idle_timeout_seconds: 600
+
+matching_engine:
+  algorithm: "price_time_priority"
+  
+  performance:
+    matching_frequency_ms: 10
+    batch_size: 100
+  
+  orderbook_store:
+    type: "inmemory"  # Options: redis, inmemory
+    redis:
+      host: "${REDIS_HOST}"
+      port: 6379
+      password: "${REDIS_PASSWORD}"
+      cluster_mode: false
+      db_index: 0
+      persistence_enabled: true
+      snapshot_interval_seconds: 60
+  
+  execution:
+    atomic_trades: true
+    max_partial_fills: 10
+  
+  circuit_breakers:
+    enabled: true
+    price_movement:
+      enabled: true
+      percent_threshold: 10.0
+      time_window_seconds: 60
+      halt_duration_seconds: 300
+    liquidity:
+      enabled: true
+      min_bid_ask_orders: 5
+      max_spread_percent: 5.0
+      halt_duration_seconds: 60
+
+risk_engine:
+  margin_method: "simplified_span"  # Only simplified_span supported in v1.0.0
+  
+  initial_margin:
+    - symbol: "BTC"
+      percentage: 0.20
+    - symbol: "ETH"
+      percentage: 0.25
+  
+  maintenance_margin:
+    - symbol: "BTC"
+      percentage: 0.15
+    - symbol: "ETH"
+      percentage: 0.20
+  
+  liquidation:
+    enabled: true
+    threshold: 0.80
+    check_frequency_seconds: 5
+    partial_liquidation: true
+    insurance_fund:
+      enabled: true
+      initial_balance_usdt: 100000.0
+      replenishment_percent: 0.10
+  
+  position_limits:
+    max_contracts_per_instrument: 1000
+    max_notional_per_user_usdt: 1000000.0
+    max_delta_exposure_btc: 10.0
+    max_gamma_exposure: 100.0
+  
+  greeks:
+    enabled: true
+    calculation_frequency_seconds: 10
+    risk_free_rate: 0.05
+    volatility:
+      type: "implied"  # Options: implied, historical, manual
+      historical_days: 30
+      manual_values:
+        BTC: 0.80
+        ETH: 0.90
+  
+  storage:
+    type: "postgres"
+    postgres:
+      host: "${RISK_DB_HOST}"
+      port: 5432
+      database: "risk"
+      user: "${RISK_DB_USER}"
+      password: "${RISK_DB_PASSWORD}"
+      ssl_mode: "require"
+      max_connections: 30
+      connection_timeout_seconds: 30
+      idle_timeout_seconds: 600
