@@ -1,0 +1,33 @@
+[package]
+name = "openx"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "OpenExchange CLI and server binary"
+
+[[bin]]
+name = "openx"
+path = "src/main.rs"
+
+[dependencies]
+# Internal crates
+cli = { workspace = true }
+config = { workspace = true }
+server = { workspace = true }
+observability = { workspace = true }
+
+# CLI
+clap = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,19 @@
+[package]
+name = "risk-engine"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Risk management engine for OpenExchange"
+
+[dependencies]
+common = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true
+
+[lib]
+name = "risk_engine"
+path = "src/lib.rs"

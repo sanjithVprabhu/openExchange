@@ -1,0 +1,21 @@
+[package]
+name = "market-data"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Market data feeds for OpenExchange"
+
+[dependencies]
+common = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+[lints]
+workspace = true
+
+[lib]
+name = "market_data"
+path = "src/lib.rs"

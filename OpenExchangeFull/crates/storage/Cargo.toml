@@ -1,0 +1,21 @@
+[package]
+name = "storage"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Storage and database abstractions for OpenExchange"
+
+[dependencies]
+common = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+
+[lints]
+workspace = true
+
+[lib]
+name = "storage"
+path = "src/lib.rs"

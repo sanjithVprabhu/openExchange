@@ -1,0 +1,25 @@
+[package]
+name = "config"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Configuration parsing and validation for OpenExchange"
+
+[dependencies]
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+regex = { workspace = true }
+url = { workspace = true }
+anyhow = { workspace = true }
+
+[lints]
+workspace = true
+
+[lib]
+name = "config"
+path = "src/lib.rs"

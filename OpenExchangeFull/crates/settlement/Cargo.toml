@@ -1,0 +1,19 @@
+[package]
+name = "settlement"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Settlement service for OpenExchange"
+
+[dependencies]
+common = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true
+
+[lib]
+name = "settlement"
+path = "src/lib.rs"

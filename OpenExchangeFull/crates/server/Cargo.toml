@@ -1,0 +1,67 @@
+[package]
+name = "server"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Server infrastructure for OpenExchange (HTTP, gRPC, WebSocket)"
+
+[dependencies]
+# Internal crates
+common = { workspace = true }
+observability = { workspace = true }
+
+# HTTP Server (Axum)
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+
+# gRPC Server (Tonic)
+tonic = { workspace = true }
+
+# WebSocket
+tokio-tungstenite = { workspace = true }
+tungstenite = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Async traits
+async-trait = { workspace = true }
+
+# Synchronization
+parking_lot = { workspace = true }
+
+# Futures
+futures = { workspace = true }
+futures-util = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# HTTP Client for health checks
+reqwest = { workspace = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+
+[lints]
+workspace = true
+
+[lib]
+name = "server"
+path = "src/lib.rs"
