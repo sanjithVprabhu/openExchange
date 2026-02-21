@@ -206,6 +206,39 @@ instrument:
       month: 12                        # December
       expiry_time_utc: "08:00"
   
+  # Strike generation rules (per asset)
+  generation:
+    BTC:
+      grid_size: 1000
+      upper_bound: 20000
+      lower_bound: 20000
+      upper_disp: 15000
+      lower_disp: 15000
+    ETH:
+      grid_size: 100
+      upper_bound: 1000
+      lower_bound: 1000
+      upper_disp: 800
+      lower_disp: 800
+    SOL:
+      grid_size: 10
+      upper_bound: 50
+      lower_bound: 50
+      upper_disp: 40
+      lower_disp: 40
+
+  # Background worker settings
+  worker:
+    enabled: true
+    interval_seconds: 300
+    run_on_startup: true
+
+  # Static mode fixed prices (for testing)
+  static_prices:
+    BTC: 50000.0
+    ETH: 3000.0
+    SOL: 100.0
+
   # Storage configuration
   storage:
     type: "postgres"  # postgres, supabase, mysql, cockroachdb, inmemory

@@ -10,6 +10,7 @@ members = [
     "crates/server",
     "crates/common",
     "crates/observability",
+    "crates/instrument",
     
     # Service crates (placeholders for future implementation)
     "crates/storage",
@@ -35,6 +36,7 @@ config = { path = "crates/config" }
 server = { path = "crates/server" }
 common = { path = "crates/common" }
 observability = { path = "crates/observability" }
+instrument = { path = "crates/instrument" }
 storage = { path = "crates/storage" }
 matching-engine = { path = "crates/matching-engine" }
 risk-engine = { path = "crates/risk-engine" }
@@ -86,6 +88,7 @@ hyper-util = { version = "0.1", features = ["full"] }
 tonic = "0.12"
 prost = "0.13"
 prost-types = "0.13"
+tonic-build = "0.12"
 
 # === WebSocket ===
 tokio-tungstenite = "0.24"
@@ -99,6 +102,10 @@ pin-project-lite = "0.2"
 
 # === HTTP Client ===
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+
+# === Database ===
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "bigdecimal"] }
+bigdecimal = "0.4"
 
 # === Testing ===
 tokio-test = "0.4"

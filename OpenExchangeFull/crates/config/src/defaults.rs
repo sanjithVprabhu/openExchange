@@ -176,6 +176,20 @@ pub fn default_historical_days() -> u32 {
     30
 }
 
+// Chain defaults
+pub fn default_gas_limit() -> u64 {
+    100000
+}
+
+// Settlement defaults
+pub fn default_trade_settlement_delay() -> u64 {
+    2
+}
+
+pub fn default_expiry_settlement_delay() -> u64 {
+    60
+}
+
 // Deployment defaults
 pub fn default_host() -> String {
     "0.0.0.0".to_string()
@@ -183,4 +197,17 @@ pub fn default_host() -> String {
 
 pub fn default_service_host() -> String {
     "[SERVICE_IP_ADDRESS]".to_string()
+}
+
+// Instrument worker defaults
+pub fn default_worker_enabled() -> bool {
+    true
+}
+
+pub fn default_worker_interval() -> u64 {
+    300 // 5 minutes
+}
+
+pub fn default_run_on_startup() -> bool {
+    true
 }

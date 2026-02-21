@@ -1,0 +1,61 @@
+[package]
+name = "instrument"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Instrument management for OpenExchange - option instrument generation, storage traits, and domain types"
+
+[dependencies]
+# Internal crates
+config = { workspace = true }
+common = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Async
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+
+# Database (optional, for PostgresInstrumentStore)
+sqlx = { workspace = true, optional = true }
+
+# HTTP API (optional, for instrument API handlers)
+axum = { workspace = true, optional = true }
+
+# gRPC (optional, for instrument gRPC service)
+tonic = { workspace = true, optional = true }
+prost = { workspace = true, optional = true }
+prost-types = { workspace = true, optional = true }
+
+# HTTP Client (optional, for gateway forwarding)
+reqwest = { workspace = true, optional = true }
+
+[features]
+default = ["postgres", "api"]
+postgres = ["dep:sqlx"]
+api = ["dep:axum", "dep:reqwest", "postgres"]
+grpc = ["dep:tonic", "dep:prost", "dep:prost-types", "postgres"]
+client = ["dep:reqwest", "dep:tonic", "dep:prost", "dep:prost-types"]
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+
+[lints]
+workspace = true

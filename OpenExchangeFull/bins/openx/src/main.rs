@@ -6,15 +6,21 @@
 
 use anyhow::{Context, Result};
 use cli::{Cli, Commands, DeploymentMode};
-use config::{generate_default_config, load_config, save_config, validate_config};
+use config::{generate_default_config, load_config, save_config, validate_config, MasterConfig};
+use instrument::api::handlers::InstrumentApiState;
+use instrument::db::models::Environment;
+use instrument::db::postgres::PostgresInstrumentStore;
+use instrument::worker::service::{InstrumentWorker, StaticSpotPriceProvider};
 use observability::{init_logging, LogFormat};
 use server::{ports, CombinedServer, ServerConfig, ServerExt};
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
+use tokio::sync::watch;
 use tracing::{debug, error, info, warn};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize logging
     init_logging("openx", LogFormat::Pretty)?;
 
     info!("OpenExchange starting...");
@@ -45,7 +51,6 @@ async fn main() -> Result<()> {
     }
 }
 
-/// Get default ports for each deployment mode
 fn get_default_ports(mode: &DeploymentMode) -> (u16, u16, u16) {
     match mode {
         DeploymentMode::Monolith | DeploymentMode::Gateway => {
@@ -81,8 +86,6 @@ async fn start_exchange<P: AsRef<Path>>(
     ws_override: Option<u16>,
 ) -> Result<()> {
     let config_path = config_path.as_ref();
-
-    // Check if using default config (no port overrides)
     let using_default_config =
         http_override.is_none() && grpc_override.is_none() && ws_override.is_none();
 
@@ -90,11 +93,9 @@ async fn start_exchange<P: AsRef<Path>>(
         println!("Starting in {} mode with default ports", mode.as_str());
     }
 
-    // Load and validate config
     let config = load_config(config_path)?;
     let report = validate_config(&config);
 
-    // Log warnings
     if !report.warnings.is_empty() {
         warn!("Configuration warnings:");
         for warning in &report.warnings {
@@ -102,7 +103,6 @@ async fn start_exchange<P: AsRef<Path>>(
         }
     }
 
-    // Check validation errors
     if !report.is_valid() {
         error!(
             error_count = report.errors.len(),
@@ -114,72 +114,343 @@ async fn start_exchange<P: AsRef<Path>>(
         anyhow::bail!("Cannot start exchange due to configuration errors");
     }
 
-    // Get default ports for this mode
     let (default_http, default_grpc, default_ws) = get_default_ports(&mode);
-
-    // Apply CLI overrides or use defaults
     let http_port = http_override.unwrap_or(default_http);
     let grpc_port = grpc_override.unwrap_or(default_grpc);
     let ws_port = ws_override.unwrap_or(default_ws);
 
     let mode_name = mode.as_str();
 
-    // Log port information
-    if using_default_config {
-        println!(
-            "Using default ports: HTTP={}, gRPC={}, WebSocket={}",
-            http_port, grpc_port, ws_port
-        );
-    } else {
-        if http_override.is_none() {
-            debug!(port = default_http, "Using default HTTP port");
-        }
-        if grpc_override.is_none() {
-            debug!(port = default_grpc, "Using default gRPC port");
-        }
-        if ws_override.is_none() {
-            debug!(port = default_ws, "Using default WebSocket port");
-        }
-    }
-
     info!(
         mode = mode_name,
         http_port, grpc_port, ws_port, "Starting exchange"
     );
 
-    // Start service
-    start_service_with_ports(mode_name, http_port, grpc_port, ws_port).await
+    start_service_with_ports(&mode, &config, http_port, grpc_port, ws_port).await
 }
 
 async fn start_service_with_ports(
-    service_name: &str,
+    mode: &DeploymentMode,
+    config: &MasterConfig,
     http_port: u16,
     grpc_port: u16,
     ws_port: u16,
 ) -> Result<()> {
+    match mode {
+        DeploymentMode::Monolith | DeploymentMode::Gateway => {
+            start_gateway_or_monolith(mode, config, http_port, grpc_port, ws_port).await
+        }
+        DeploymentMode::Instrument => {
+            start_instrument_service(config, http_port, grpc_port).await
+        }
+        DeploymentMode::Oms | DeploymentMode::Matching | DeploymentMode::Wallet 
+        | DeploymentMode::Settlement | DeploymentMode::Risk | DeploymentMode::Market => {
+            // Future: start_other_service(config, http_port, grpc_port, ws_port, mode).await
+            todo!("Service '{}' not yet implemented", mode.as_str())
+        }
+    }
+}
+
+/// Start in monolith or gateway mode.
+///
+/// Monolith: HTTP + Direct DB access + Worker (current behavior)
+/// Gateway: HTTP + Forwarding to backends (no DB, no worker)
+async fn start_gateway_or_monolith(
+    mode: &DeploymentMode,
+    config: &MasterConfig,
+    http_port: u16,
+    grpc_port: u16,
+    ws_port: u16,
+) -> Result<()> {
+    let service_name = mode.as_str();
+
     info!(
         service = service_name,
-        http_port, grpc_port, ws_port, "Starting service"
+        http_port, grpc_port, ws_port, "Starting gateway/monolith"
     );
 
-    // Create server config with the specified ports
+    // Create shutdown channel
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    // For monolith mode, initialize instrument service with DB
+    // For gateway mode, we'll use forwarding (no DB)
+    let is_gateway = *mode == DeploymentMode::Gateway;
+
+    let instrument_state = if is_gateway {
+        // Gateway mode: Don't connect to DB, use forwarding
+        None
+    } else {
+        // Monolith mode: Connect to DB directly
+        initialize_instrument_service(config, shutdown_rx.clone()).await?
+    };
+
+    // Build HTTP router
+    let mut http_router: axum::Router = axum::Router::new()
+        .route(
+            "/health",
+            axum::routing::get(server::health::simple_health_handler),
+        )
+        .route(
+            "/",
+            axum::routing::get(move || {
+                let name = service_name.to_string();
+                async move { format!("{} Service", name) }
+            }),
+        );
+
+    if is_gateway {
+        // Gateway mode: Add forwarding routes
+        // Note: We forward via HTTP, so use instrument's HTTP port (8081), not gRPC port (9081)
+        let instrument_url = get_service_url("instrument", 8081);
+        info!("Gateway mode: Forwarding to instrument service at {}", instrument_url);
+
+        let forwarder = instrument::api::InstrumentForwarder::new(&instrument_url);
+        let forwarding_state = Arc::new(instrument::api::ForwardingState {
+            instrument: forwarder,
+        });
+
+        http_router = http_router.merge(
+            instrument::api::instrument_forwarding_routes(forwarding_state)
+        );
+    } else if let Some(ref state) = instrument_state {
+        // Monolith mode: Add direct routes
+        info!("Monolith mode: Mounting direct instrument API routes");
+        http_router = http_router.merge(
+            instrument::api::instrument_routes(Arc::clone(state))
+        );
+    }
+
+    // Create server config
     let server_config = ServerConfig {
         host: "0.0.0.0".to_string(),
         http_port: Some(http_port),
-        grpc_port: Some(grpc_port),
+        grpc_port: if is_gateway { None } else { Some(grpc_port) }, // Gateway doesn't need gRPC
         websocket_port: Some(ws_port),
     };
 
-    // Create server with custom config
-    let server = CombinedServer::ping_server_with_config(service_name, server_config);
+    // Create combined server with the router
+    let server = CombinedServer::with_http_router(server_config, http_router);
 
     // Validate ports
     server.validate_ports().await?;
 
-    // Start server with graceful shutdown (Ctrl+C handling)
+    // Run server with Ctrl+C handling
     server.run_with_ctrl_c().await?;
 
+    // Signal shutdown to workers
+    let _ = shutdown_tx.send(true);
+
     Ok(())
+}
+
+/// Start instrument service (gRPC server + worker).
+///
+/// This is the backend service that handles instrument CRUD operations.
+/// It connects to PostgreSQL and runs the background worker.
+async fn start_instrument_service(
+    config: &MasterConfig,
+    http_port: u16,
+    grpc_port: u16,
+) -> Result<()> {
+    info!(
+        "Starting Instrument Service (gRPC on port {}, HTTP on port {})",
+        grpc_port, http_port
+    );
+
+    // Create shutdown channel
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    // Initialize instrument service (DB + Worker)
+    let instrument_state = initialize_instrument_service(config, shutdown_rx.clone()).await?
+        .ok_or_else(|| anyhow::anyhow!("Failed to initialize instrument service"))?;
+
+    // Build HTTP router (optional, for direct access/debugging)
+    let http_router: axum::Router = axum::Router::new()
+        .route(
+            "/health",
+            axum::routing::get(server::health::simple_health_handler),
+        )
+        .route(
+            "/",
+            axum::routing::get(|| async { "OpenExchange Instrument Service" }),
+        )
+        .merge(instrument::api::instrument_routes(instrument_state.clone()));
+
+    // Create server config with both HTTP and gRPC
+    let server_config = ServerConfig {
+        host: "0.0.0.0".to_string(),
+        http_port: Some(http_port),
+        grpc_port: Some(grpc_port),
+        websocket_port: None,
+    };
+
+    // Create combined server
+    let server = CombinedServer::with_http_router(server_config, http_router);
+
+    // Validate ports
+    server.validate_ports().await?;
+
+    // Note: In a full implementation, we'd start the gRPC server here too
+    // For now, we just start HTTP and let it be the main interface
+
+    // Run server with Ctrl+C handling
+    server.run_with_ctrl_c().await?;
+
+    // Signal shutdown to workers
+    let _ = shutdown_tx.send(true);
+
+    Ok(())
+}
+
+/// Get service HTTP URL from environment variable.
+///
+/// Used by gateway to forward requests to backend services.
+/// Priority:
+/// 1. Environment variable (e.g., INSTRUMENT_SERVICE_URL)
+/// 2. Localhost fallback for development
+///
+/// # Arguments
+/// * `service` - Service name (e.g., "instrument", "oms")
+/// * `default_port` - Default HTTP port if env var not set
+fn get_service_url(service: &str, default_port: u16) -> String {
+    // Try SERVICE_URL first, then GRPC_URL for backwards compatibility
+    let env_var = format!("{}_SERVICE_URL", service.to_uppercase());
+    
+    std::env::var(&env_var)
+        .or_else(|_| {
+            // Fallback to GRPC_URL naming
+            let grpc_var = format!("{}_GRPC_URL", service.to_uppercase());
+            std::env::var(&grpc_var)
+        })
+        .unwrap_or_else(|_| {
+            info!(
+                "Service URL for {} not set, using localhost:{}",
+                service, default_port
+            );
+            format!("http://localhost:{}", default_port)
+        })
+}
+
+/// Initialize the instrument service for the given mode.
+async fn initialize_instrument_service(
+    config: &MasterConfig,
+    shutdown_rx: watch::Receiver<bool>,
+) -> Result<Option<Arc<InstrumentApiState>>> {
+    // Get database URL from environment or config
+    let database_url = std::env::var("INSTRUMENT_DB_URL")
+        .unwrap_or_else(|_| {
+            // Try to build from config
+            config.instrument.storage.as_ref()
+                .and_then(|s| s.postgres.as_ref())
+                .map(|pg| {
+                    format!(
+                        "postgresql://{}:{}@{}:{}/{}",
+                        pg.user,
+                        pg.password,
+                        pg.host,
+                        pg.port,
+                        pg.database
+                    )
+                })
+                .unwrap_or_else(|| {
+                    // Default for development
+                    "postgresql://postgres:password@localhost:5432/openexchange".to_string()
+                })
+        });
+
+    // Determine environment based on config mode
+    let environment = match config.exchange.mode {
+        config::ExchangeMode::Production => Environment::Prod,
+        config::ExchangeMode::Virtual => Environment::Virtual,
+        config::ExchangeMode::Both => Environment::Prod, // Default to prod for "both"
+    };
+
+    info!(
+        "Connecting to instrument database at {} for environment {:?}",
+        database_url.split('@').last().unwrap_or(&database_url),
+        environment
+    );
+
+    // Create stores for each environment
+    let mut stores = HashMap::new();
+
+    // Try to connect to database (will fail if not available)
+    match PostgresInstrumentStore::new(&database_url, Environment::Static).await {
+        Ok(store) => {
+            info!("Connected to instrument database for static environment");
+
+            // Run migrations
+            if let Err(e) = store.run_migrations().await {
+                warn!("Failed to run migrations: {}", e);
+            }
+
+            stores.insert("static".to_string(), Arc::new(store));
+        }
+        Err(e) => {
+            warn!("Could not connect to instrument database: {}", e);
+            warn!("Instrument service will not be available");
+            warn!("Set INSTRUMENT_DB_URL environment variable to enable");
+            return Ok(None);
+        }
+    }
+
+    // Create stores for other environments (same DB, different tables)
+    for env in [Environment::Prod, Environment::Virtual] {
+        match PostgresInstrumentStore::new(&database_url, env).await {
+            Ok(store) => {
+                stores.insert(env.to_string(), Arc::new(store));
+            }
+            Err(e) => {
+                warn!("Could not create store for {}: {}", env, e);
+            }
+        }
+    }
+
+    // Create static spot price provider
+    let spot_prices = config.instrument.static_prices.as_ref()
+        .map(|sp| sp.prices.clone())
+        .unwrap_or_else(|| {
+            let mut prices = HashMap::new();
+            prices.insert("BTC".to_string(), 50000.0);
+            prices.insert("ETH".to_string(), 3000.0);
+            prices.insert("SOL".to_string(), 100.0);
+            prices
+        });
+    let spot_provider = Arc::new(StaticSpotPriceProvider::new(spot_prices));
+
+    // Create worker if configured
+    let worker = if config.instrument.worker.as_ref().map(|w| w.enabled).unwrap_or(true) {
+        let worker_config = config.instrument.worker.clone().unwrap_or_default();
+        let store = stores.get(&environment.to_string())
+            .ok_or_else(|| anyhow::anyhow!("No store for environment"))?;
+
+        let worker = Arc::new(InstrumentWorker::new(
+            store.clone(),
+            config.instrument.clone(),
+            worker_config,
+            spot_provider,
+            environment,
+        ));
+
+        // Start worker in background
+        let worker_clone = worker.clone();
+        let shutdown_clone = shutdown_rx.clone();
+        tokio::spawn(async move {
+            worker_clone.run(shutdown_clone).await;
+        });
+
+        Some(worker)
+    } else {
+        None
+    };
+
+    // Create API state
+    let state = Arc::new(InstrumentApiState {
+        stores,
+        worker,
+    });
+
+    Ok(Some(state))
 }
 
 async fn validate_command<P: AsRef<Path>>(config_path: P) -> Result<()> {
@@ -195,10 +466,8 @@ async fn validate_command<P: AsRef<Path>>(config_path: P) -> Result<()> {
 
     let report = validate_config(&config);
 
-    // Print summary
     println!("\n=== Configuration Validation Report ===\n");
 
-    // Defaults
     if !report.defaults_applied.is_empty() {
         println!("Defaults Applied ({}):", report.defaults_applied.len());
         for default in &report.defaults_applied {
@@ -207,7 +476,6 @@ async fn validate_command<P: AsRef<Path>>(config_path: P) -> Result<()> {
         println!();
     }
 
-    // Warnings
     if !report.warnings.is_empty() {
         println!("Warnings ({}):", report.warnings.len());
         for warning in &report.warnings {
@@ -216,7 +484,6 @@ async fn validate_command<P: AsRef<Path>>(config_path: P) -> Result<()> {
         println!();
     }
 
-    // Errors
     if !report.errors.is_empty() {
         println!("Errors ({}):", report.errors.len());
         for err in &report.errors {
@@ -240,6 +507,15 @@ async fn validate_command<P: AsRef<Path>>(config_path: P) -> Result<()> {
         config.instrument.settlement_currencies.len()
     );
 
+    if config.instrument.generation.is_some() {
+        println!("Generation Config: Yes");
+        if let Some(gen) = &config.instrument.generation {
+            println!("  Assets configured: {:?}", gen.assets.keys().collect::<Vec<_>>());
+        }
+    } else {
+        println!("Generation Config: No");
+    }
+
     Ok(())
 }
 
@@ -247,16 +523,13 @@ async fn init_command<P: AsRef<Path>>(output_path: P) -> Result<()> {
     let output_path = output_path.as_ref();
     info!(?output_path, "Initializing new configuration file");
 
-    // Generate default config
     let config = generate_default_config();
 
-    // Ensure parent directory exists
     if let Some(parent) = output_path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("Failed to create directory: {:?}", parent))?;
     }
 
-    // Save config
     save_config(&config, output_path)?;
 
     println!("[ok] Configuration file created successfully!");
@@ -271,6 +544,7 @@ async fn init_command<P: AsRef<Path>>(output_path: P) -> Result<()> {
     println!("Next steps:");
     println!("  1. Edit the configuration file to customize settings");
     println!("  2. Set required environment variables (database connections, API keys)");
+    println!("     - INSTRUMENT_DB_URL: PostgreSQL connection string");
     println!(
         "  3. Run 'openx validate --config {:?}' to check configuration",
         output_path

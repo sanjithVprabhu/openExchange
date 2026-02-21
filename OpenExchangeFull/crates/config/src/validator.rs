@@ -382,11 +382,13 @@ fn validate_provider(provider: &MarketDataProvider, report: &mut ValidationRepor
             });
         }
 
-        if stream.endpoint.is_empty() {
-            report.add_error(ValidationError::InvalidProvider {
-                name: provider.name.clone(),
-                message: format!("Stream '{}' has empty endpoint", stream.name),
-            });
+        if let Some(ref endpoint) = stream.endpoint {
+            if endpoint.is_empty() {
+                report.add_error(ValidationError::InvalidProvider {
+                    name: provider.name.clone(),
+                    message: format!("Stream '{}' has empty endpoint", stream.name),
+                });
+            }
         }
     }
 
@@ -446,11 +448,14 @@ fn validate_expiry(expiry: &ExpiryConfig, report: &mut ValidationReport) {
 
 #[allow(dead_code)]
 fn validate_expiry_schedule(name: &str, schedule: &ExpirySchedule, report: &mut ValidationReport) {
-    if schedule.count == 0 {
-        report.add_error(ValidationError::InvalidExpirySchedule {
-            schedule: name.to_string(),
-            message: "count must be a positive integer".to_string(),
-        });
+    // count is required for daily, weekly, monthly schedules
+    if let Some(count) = schedule.count {
+        if count == 0 {
+            report.add_error(ValidationError::InvalidExpirySchedule {
+                schedule: name.to_string(),
+                message: "count must be a positive integer".to_string(),
+            });
+        }
     }
 
     // Validate time format HH:MM

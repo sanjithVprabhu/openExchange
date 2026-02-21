@@ -50,7 +50,7 @@ pub enum Commands {
     },
 }
 
-#[derive(ValueEnum, Clone, Debug)]
+#[derive(ValueEnum, Clone, Debug, PartialEq, Eq)]
 pub enum DeploymentMode {
     /// Run all services in one process (monolith)
     Monolith,

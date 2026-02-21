@@ -1,0 +1,143 @@
+syntax = "proto3";
+
+package openexchange.instrument.v1;
+
+import "google/protobuf/timestamp.proto";
+
+service InstrumentService {
+  // List instruments with filters
+  rpc ListInstruments(ListInstrumentsRequest) returns (ListInstrumentsResponse);
+  
+  // Get instrument by ID
+  rpc GetInstrument(GetInstrumentRequest) returns (GetInstrumentResponse);
+  
+  // Get instrument by symbol
+  rpc GetInstrumentBySymbol(GetInstrumentBySymbolRequest) returns (GetInstrumentResponse);
+  
+  // Get statistics
+  rpc GetStatistics(GetStatisticsRequest) returns (GetStatisticsResponse);
+  
+  // Update instrument status (admin)
+  rpc UpdateInstrumentStatus(UpdateStatusRequest) returns (UpdateStatusResponse);
+  
+  // Force regeneration (admin)
+  rpc ForceRegenerate(ForceRegenerateRequest) returns (ForceRegenerateResponse);
+}
+
+// Enums
+enum Environment {
+  ENVIRONMENT_UNSPECIFIED = 0;
+  ENVIRONMENT_PROD = 1;
+  ENVIRONMENT_VIRTUAL = 2;
+  ENVIRONMENT_STATIC = 3;
+}
+
+enum OptionType {
+  OPTION_TYPE_UNSPECIFIED = 0;
+  OPTION_TYPE_CALL = 1;
+  OPTION_TYPE_PUT = 2;
+}
+
+enum InstrumentStatus {
+  INSTRUMENT_STATUS_UNSPECIFIED = 0;
+  INSTRUMENT_STATUS_ACTIVE = 1;
+  INSTRUMENT_STATUS_INACTIVE = 2;
+  INSTRUMENT_STATUS_EXPIRED = 3;
+  INSTRUMENT_STATUS_SETTLED = 4;
+}
+
+// Messages
+message Instrument {
+  string id = 1;
+  string symbol = 2;
+  string underlying_symbol = 3;
+  string underlying_name = 4;
+  OptionType option_type = 5;
+  double strike = 6;
+  google.protobuf.Timestamp expiry = 7;
+  string settlement_currency = 8;
+  double contract_size = 9;
+  double tick_size = 10;
+  uint64 min_order_size = 11;
+  InstrumentStatus status = 12;
+  google.protobuf.Timestamp created_at = 13;
+  google.protobuf.Timestamp updated_at = 14;
+}
+
+// List
+message ListInstrumentsRequest {
+  Environment environment = 1;
+  optional string underlying = 2;
+  optional OptionType option_type = 3;
+  optional InstrumentStatus status = 4;
+  optional google.protobuf.Timestamp expiry_after = 5;
+  optional google.protobuf.Timestamp expiry_before = 6;
+  optional double strike_min = 7;
+  optional double strike_max = 8;
+  uint32 limit = 9;
+  uint32 offset = 10;
+}
+
+message ListInstrumentsResponse {
+  bool success = 1;
+  uint32 total_count = 2;
+  repeated Instrument instruments = 3;
+  string error_message = 4;
+}
+
+// Get
+message GetInstrumentRequest {
+  Environment environment = 1;
+  string id = 2;
+}
+
+message GetInstrumentBySymbolRequest {
+  Environment environment = 1;
+  string symbol = 2;
+}
+
+message GetInstrumentResponse {
+  bool success = 1;
+  Instrument instrument = 2;
+  string error_message = 3;
+}
+
+// Stats
+message GetStatisticsRequest {
+  Environment environment = 1;
+}
+
+message GetStatisticsResponse {
+  bool success = 1;
+  uint32 total = 2;
+  map<string, uint32> by_status = 3;
+  map<string, uint32> by_underlying = 4;
+  string error_message = 5;
+}
+
+// Update Status
+message UpdateStatusRequest {
+  Environment environment = 1;
+  string id = 2;
+  InstrumentStatus status = 3;
+}
+
+message UpdateStatusResponse {
+  bool success = 1;
+  Instrument instrument = 2;
+  string error_message = 3;
+}
+
+// Force Regenerate
+message ForceRegenerateRequest {
+  Environment environment = 1;
+  string underlying = 2;
+  double spot_price = 3;
+}
+
+message ForceRegenerateResponse {
+  bool success = 1;
+  uint32 instruments_created = 2;
+  uint32 instruments_updated = 3;
+  string error_message = 4;
+}

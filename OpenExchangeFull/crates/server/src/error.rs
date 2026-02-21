@@ -57,6 +57,9 @@ pub enum ServerError {
 
     #[error("Server already running")]
     AlreadyRunning,
+
+    #[error("Internal server error: {0}")]
+    Internal(String),
 }
 
 impl ServerError {
