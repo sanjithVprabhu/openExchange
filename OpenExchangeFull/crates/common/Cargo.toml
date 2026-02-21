@@ -14,5 +14,10 @@ anyhow = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 
+# AddressBook dependencies
+reqwest = { workspace = true, features = ["json"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "time", "sync"] }
+tracing = { workspace = true }
+
 [lints]
 workspace = true

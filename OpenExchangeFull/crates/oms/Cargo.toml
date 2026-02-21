@@ -7,9 +7,45 @@ license.workspace = true
 description = "Order Management System for OpenExchange"
 
 [dependencies]
+# Internal crates
 common = { workspace = true }
+config = { workspace = true }
+
+# Core
 thiserror = { workspace = true }
 tracing = { workspace = true }
+async-trait = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Database
+sqlx = { workspace = true, optional = true }
+bigdecimal = { workspace = true, optional = true }
+
+# HTTP Server
+axum = { workspace = true, optional = true }
+tower = { workspace = true, optional = true }
+tower-http = { workspace = true, optional = true }
+
+# HTTP Client
+reqwest = { workspace = true, optional = true, features = ["json"] }
+
+# Time
+chrono = { workspace = true }
+
+# UUID
+uuid = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true, features = ["time"] }
+
+[features]
+default = []
+postgres = ["dep:sqlx", "dep:bigdecimal"]
+api = ["dep:axum", "dep:tower", "dep:tower-http"]
+client = ["dep:reqwest"]
 
 [lints]
 workspace = true
