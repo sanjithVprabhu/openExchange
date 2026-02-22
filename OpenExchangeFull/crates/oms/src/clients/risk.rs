@@ -1,21 +1,54 @@
 //! Risk client - trait and implementations
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use crate::types::Order;
 use crate::store::traits::OmsResult;
 
 /// Risk check result from the risk engine
-#[derive(Debug, Clone)]
+///
+/// This struct is designed to deserialize responses from the Risk Engine API.
+/// Fields use `deserialize_with` to handle both `null` and numeric values.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RiskCheckResult {
     /// Whether the order is approved
     pub approved: bool,
     /// Reason for rejection if not approved
+    #[serde(default)]
     pub reason: Option<String>,
     /// Required margin for this order
+    #[serde(default, deserialize_with = "deserialize_f64_or_option")]
     pub required_margin: Option<f64>,
+    /// Free margin available (from risk engine)
+    #[serde(default, deserialize_with = "deserialize_f64_or_option")]
+    pub free_margin: Option<f64>,
+    /// Projected free margin after order
+    #[serde(default, deserialize_with = "deserialize_f64_or_option")]
+    pub projected_free_margin: Option<f64>,
     /// Margin lock ID (for later release)
+    #[serde(default)]
     pub margin_lock_id: Option<String>,
+}
+
+/// Deserialize a value that could be either a bare f64 or Option<f64>
+fn deserialize_f64_or_option<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // Use an untagged enum to handle both cases
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum F64OrNull {
+        Value(f64),
+        Null,
+    }
+
+    match F64OrNull::deserialize(deserializer) {
+        Ok(F64OrNull::Value(v)) => Ok(Some(v)),
+        Ok(F64OrNull::Null) => Ok(None),
+        Err(_) => Ok(None),
+    }
 }
 
 /// Client trait for Risk Engine - protocol agnostic
@@ -101,6 +134,10 @@ impl RiskClient for MockRiskClient {
         let notional = price * order.quantity as f64;
         let required_margin = notional * self.margin_rate;
 
+        // Simulate free margin (arbitrary for testing)
+        let free_margin = 10000.0;
+        let projected_free = free_margin - required_margin;
+
         Ok(RiskCheckResult {
             approved: self.always_approve,
             reason: if self.always_approve {
@@ -109,6 +146,8 @@ impl RiskClient for MockRiskClient {
                 self.rejection_reason.clone()
             },
             required_margin: Some(required_margin),
+            free_margin: Some(free_margin),
+            projected_free_margin: Some(projected_free),
             margin_lock_id: if self.always_approve {
                 Some(Uuid::new_v4().to_string())
             } else {
@@ -161,11 +200,20 @@ pub mod http {
         ) -> OmsResult<RiskCheckResult> {
             let url = format!("{}/api/v1/internal/risk/check", self.base_url);
             
+            // Convert order side to string format expected by Risk Engine
+            let order_side = match order.side {
+                common::types::Side::Buy => "buy",
+                common::types::Side::Sell => "sell",
+            };
+
             let response = self.client
                 .post(&url)
                 .json(&serde_json::json!({
-                    "order": order,
-                    "instrument_id": instrument_id
+                    "user_id": order.user_id.to_string(),
+                    "order_side": order_side,
+                    "instrument_id": instrument_id,
+                    "quantity": order.quantity,
+                    "price": order.price.unwrap_or(0.0)
                 }))
                 .send()
                 .await

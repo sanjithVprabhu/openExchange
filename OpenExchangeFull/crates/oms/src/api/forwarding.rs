@@ -8,7 +8,6 @@ use axum::{
 };
 use std::sync::Arc;
 use reqwest::Client;
-use serde::Deserialize;
 
 use common::addressbook::AddressBook;
 use crate::api::models::*;
@@ -16,6 +15,25 @@ use crate::api::models::*;
 pub struct OmsForwardingState {
     pub client: Client,
     pub address_book: Arc<AddressBook>,
+}
+
+#[derive(Clone)]
+pub struct OmsForwarder {
+    pub client: Client,
+    pub base_url: String,
+}
+
+impl OmsForwarder {
+    pub fn new(oms_service_url: &str) -> Self {
+        Self {
+            client: Client::new(),
+            base_url: oms_service_url.trim_end_matches('/').to_string(),
+        }
+    }
+
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
 }
 
 /// Forward create order request

@@ -80,7 +80,7 @@ impl OrderStore for PostgresOrderStore {
             .await
             .map_err(|e| OmsError::StorageError(e.to_string()))?;
 
-        let order_id: Uuid = result.get("order_id");
+        let _order_id: Uuid = result.get("order_id");
         Ok(order)
     }
 
@@ -169,20 +169,14 @@ impl OrderStore for PostgresOrderStore {
     ) -> OmsResult<Vec<Order>> {
         let table = self.table_name(env);
         
-        let mut conditions = Vec::new();
-        let mut param_idx = 1;
-        let mut params: Vec<Box<dyn sqlx::Encode<'_, sqlx::PgDatabase>> + Send + Sync> = Vec::new();
+        let mut conditions: Vec<String> = Vec::new();
 
-        if let Some(uid) = user_id {
-            conditions.push(format!("user_id = ${}", param_idx));
-            params.push(Box::new(uid));
-            param_idx += 1;
+        if user_id.is_some() {
+            conditions.push("user_id = $1".to_string());
         }
 
-        if let Some(iid) = instrument_id {
-            conditions.push(format!("instrument_id = ${}", param_idx));
-            params.push(Box::new(iid.to_string()));
-            param_idx += 1;
+        if instrument_id.is_some() {
+            conditions.push("instrument_id = $2".to_string());
         }
 
         if let Some(ref status_list) = statuses {
@@ -309,10 +303,10 @@ impl OrderStore for PostgresOrderStore {
         let table = self.table_name(env);
         
         let query = if user_id.is_some() || statuses.is_some() {
-            let mut conditions = Vec::new();
+            let mut conditions: Vec<String> = Vec::new();
             
             if user_id.is_some() {
-                conditions.push("user_id IS NOT NULL");
+                conditions.push("user_id IS NOT NULL".to_string());
             }
             
             if let Some(ref status_list) = statuses {
@@ -384,8 +378,8 @@ impl PostgresOrderStore {
             order_type,
             time_in_force,
             price: row.get("price"),
-            quantity: row.get::<_, i32>("quantity") as u32,
-            filled_quantity: row.get::<_, i32>("filled_quantity") as u32,
+            quantity: row.get::<i32, _>("quantity") as u32,
+            filled_quantity: row.get::<i32, _>("filled_quantity") as u32,
             avg_fill_price: row.get("avg_fill_price"),
             status,
             client_order_id: row.get("client_order_id"),
@@ -402,7 +396,7 @@ impl PostgresOrderStore {
             fill_id: row.get("fill_id"),
             order_id: row.get("order_id"),
             trade_id: row.get("trade_id"),
-            quantity: row.get::<_, i32>("quantity") as u32,
+            quantity: row.get::<i32, _>("quantity") as u32,
             price: row.get("price"),
             counterparty_order_id: row.get("counterparty_order_id"),
             fee: row.get("fee"),

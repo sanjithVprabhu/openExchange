@@ -3,14 +3,13 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use common::types::{Side, OrderType, TimeInForce};
-use crate::types::{OrderStatus, Environment};
+use crate::types::{OrderStatus, Order};
 
 /// Request to create a new order
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CreateOrderRequest {
     pub instrument_id: String,
     pub side: Side,
-    #[serde(default)]
     pub order_type: OrderType,
     #[serde(default = "default_time_in_force")]
     pub time_in_force: TimeInForce,
@@ -25,7 +24,7 @@ fn default_time_in_force() -> TimeInForce {
 }
 
 /// Response after creating an order
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CreateOrderResponse {
     pub success: bool,
     pub order: Option<OrderResponse>,
@@ -49,13 +48,14 @@ impl CreateOrderResponse {
             error: Some(ErrorDetail {
                 code: code.into(),
                 message: message.into(),
+                details: None,
             }),
         }
     }
 }
 
 /// Single order in API response
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct OrderResponse {
     pub order_id: Uuid,
     pub user_id: Uuid,
@@ -107,7 +107,7 @@ impl From<Order> for OrderResponse {
 }
 
 /// List orders request parameters
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct ListOrdersParams {
     #[serde(default)]
     pub instrument_id: Option<String>,
@@ -122,7 +122,7 @@ pub struct ListOrdersParams {
 }
 
 /// List orders response
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ListOrdersResponse {
     pub success: bool,
     pub total_count: u64,
@@ -132,7 +132,7 @@ pub struct ListOrdersResponse {
 }
 
 /// Fill record in response
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct FillResponse {
     pub fill_id: Uuid,
     pub trade_id: Uuid,
@@ -160,7 +160,7 @@ impl From<crate::types::OrderFill> for FillResponse {
 }
 
 /// Get fills response
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct GetFillsResponse {
     pub success: bool,
     pub order_id: Uuid,
@@ -169,7 +169,7 @@ pub struct GetFillsResponse {
 }
 
 /// Cancel order response
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CancelOrderResponse {
     pub success: bool,
     pub order: Option<OrderResponse>,
@@ -178,7 +178,7 @@ pub struct CancelOrderResponse {
 }
 
 /// Error detail
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ErrorDetail {
     pub code: String,
     pub message: String,

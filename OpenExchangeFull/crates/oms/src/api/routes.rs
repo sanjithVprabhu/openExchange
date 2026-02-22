@@ -1,14 +1,14 @@
 //! API routes for OMS
 
 use axum::{
-    routing::{get, post, delete, patch},
+    routing::{get, post},
     Router,
 };
-use crate::api::handlers::*;
-use crate::api::OmsApiState;
+use std::sync::Arc;
+use crate::api::handlers::{OmsApiState, health_handler, create_order, list_orders, get_active_orders, get_order, cancel_order, get_fills};
 
 /// Create the OMS router
-pub fn create_router(state: OmsApiState) -> Router {
+pub fn create_router(state: Arc<OmsApiState>) -> Router {
     Router::new()
         .route("/health", get(health_handler))
         .route(
@@ -31,8 +31,8 @@ pub fn create_router(state: OmsApiState) -> Router {
 }
 
 /// Get the API state for the router
-pub fn create_api_state(manager: crate::manager::OrderManager) -> OmsApiState {
-    OmsApiState {
+pub fn create_api_state(manager: crate::manager::OrderManager) -> Arc<OmsApiState> {
+    Arc::new(OmsApiState {
         manager: Arc::new(manager),
-    }
+    })
 }

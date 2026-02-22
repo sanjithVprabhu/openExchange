@@ -17,9 +17,15 @@ config = { workspace = true }
 server = { workspace = true }
 observability = { workspace = true }
 instrument = { workspace = true }
+oms = { workspace = true, features = ["postgres", "api", "client"] }
+risk-engine = { workspace = true, features = ["api"] }
+common = { workspace = true }
 
 # Web framework
 axum = { workspace = true }
+
+# Database
+sqlx = { workspace = true }
 
 # CLI
 clap = { workspace = true }

@@ -13,6 +13,16 @@ use instrument::db::postgres::PostgresInstrumentStore;
 use instrument::worker::service::{InstrumentWorker, StaticSpotPriceProvider};
 use observability::{init_logging, LogFormat};
 use server::{ports, CombinedServer, ServerConfig, ServerExt};
+use common::addressbook::AddressBook;
+use oms::{
+    OrderManager, PostgresOrderStore, MockMatchingClient,
+    api::{handlers::OmsApiState, routes::create_router as create_oms_router, forwarding::OmsForwardingState, forwarding::OmsForwarder},
+};
+use risk_engine::{
+    MarginConfig, RiskEngine,
+    api::{RiskApiState, create_router as create_risk_router},
+};
+use sqlx::postgres::PgPoolOptions;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -143,8 +153,14 @@ async fn start_service_with_ports(
         DeploymentMode::Instrument => {
             start_instrument_service(config, http_port, grpc_port).await
         }
-        DeploymentMode::Oms | DeploymentMode::Matching | DeploymentMode::Wallet 
-        | DeploymentMode::Settlement | DeploymentMode::Risk | DeploymentMode::Market => {
+        DeploymentMode::Oms => {
+            start_oms_service(config, http_port).await
+        }
+        DeploymentMode::Risk => {
+            start_risk_service(config, http_port).await
+        }
+        DeploymentMode::Matching | DeploymentMode::Wallet 
+        | DeploymentMode::Settlement | DeploymentMode::Market => {
             // Future: start_other_service(config, http_port, grpc_port, ws_port, mode).await
             todo!("Service '{}' not yet implemented", mode.as_str())
         }
@@ -217,6 +233,57 @@ async fn start_gateway_or_monolith(
         info!("Monolith mode: Mounting direct instrument API routes");
         http_router = http_router.merge(
             instrument::api::instrument_routes(Arc::clone(state))
+        );
+    }
+
+    // Initialize Risk service first (needed by OMS)
+    let risk_state = if is_gateway {
+        None
+    } else {
+        initialize_risk_service(config).await?
+    };
+
+    // Add Risk routes
+    if is_gateway {
+        // Gateway mode: Add forwarding routes (future)
+    } else if let Some(ref state) = risk_state {
+        info!("Monolith mode: Mounting direct Risk API routes");
+        http_router = http_router.merge(
+            create_risk_router(Arc::clone(state))
+        );
+    }
+
+    // Initialize OMS service - use direct client in monolith, HTTP in gateway
+    let oms_state = if is_gateway {
+        // Gateway mode: Use forwarding
+        None
+    } else if let Some(ref _risk) = risk_state {
+        // Monolith mode: Use HTTP client to connect to Risk Engine
+        initialize_oms_service_with_risk(config).await?
+    } else {
+        None
+    };
+
+    // Add OMS routes
+    if is_gateway {
+        // Gateway mode: Add forwarding routes
+        let oms_url = get_service_url("oms", 8082);
+        info!("Gateway mode: Forwarding to OMS service at {}", oms_url);
+
+        let forwarder = OmsForwarder::new(&oms_url);
+        let forwarding_state = Arc::new(OmsForwardingState {
+            client: forwarder.client,
+            address_book: AddressBook::new(),
+        });
+
+        http_router = http_router.merge(
+            oms::api::forwarding_routes::oms_forwarding_routes(forwarding_state)
+        );
+    } else if let Some(ref state) = oms_state {
+        // Monolith mode: Add direct routes
+        info!("Monolith mode: Mounting direct OMS API routes");
+        http_router = http_router.merge(
+            create_oms_router(Arc::clone(state))
         );
     }
 
@@ -298,6 +365,108 @@ async fn start_instrument_service(
 
     // Signal shutdown to workers
     let _ = shutdown_tx.send(true);
+
+    Ok(())
+}
+
+/// Start OMS service (standalone node).
+///
+/// This runs as a standalone service on its own node.
+async fn start_oms_service(
+    config: &MasterConfig,
+    http_port: u16,
+) -> Result<()> {
+    info!(
+        "Starting OMS Service (HTTP on port {})",
+        http_port
+    );
+
+    let oms_state = initialize_oms_service(config)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Failed to initialize OMS service"))?;
+
+    let http_router: axum::Router = axum::Router::new()
+        .route(
+            "/health",
+            axum::routing::get(server::health::simple_health_handler),
+        )
+        .route(
+            "/",
+            axum::routing::get(|| async { "OpenExchange OMS Service" }),
+        )
+        .merge(create_oms_router(oms_state.clone()));
+
+    let server_config = ServerConfig {
+        host: "0.0.0.0".to_string(),
+        http_port: Some(http_port),
+        grpc_port: None,
+        websocket_port: None,
+    };
+
+    let server = CombinedServer::with_http_router(server_config, http_router);
+    server.validate_ports().await?;
+    server.run_with_ctrl_c().await?;
+
+    Ok(())
+}
+
+async fn initialize_risk_service(
+    config: &MasterConfig,
+) -> Result<Option<Arc<RiskApiState>>> {
+    let margin_config = config.risk_engine.as_ref()
+        .map(|r| MarginConfig {
+            short_call_stress_multiplier: r.initial_margin.first()
+                .map(|m| m.percentage)
+                .unwrap_or(0.15),
+            maintenance_ratio: 0.75,
+            max_position_size: r.position_limits.max_contracts_per_instrument as u32,
+            max_total_notional: r.position_limits.max_notional_per_user_usdt,
+            max_open_positions: 100,
+        })
+        .unwrap_or_default();
+
+    let engine = RiskEngine::new(margin_config);
+    let state = RiskApiState {
+        engine: Arc::new(tokio::sync::RwLock::new(engine)),
+    };
+
+    Ok(Some(Arc::new(state)))
+}
+
+async fn start_risk_service(
+    config: &MasterConfig,
+    http_port: u16,
+) -> Result<()> {
+    info!(
+        "Starting Risk Service (HTTP on port {})",
+        http_port
+    );
+
+    let risk_state = initialize_risk_service(config)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Failed to initialize Risk service"))?;
+
+    let http_router: axum::Router = axum::Router::new()
+        .route(
+            "/health",
+            axum::routing::get(server::health::simple_health_handler),
+        )
+        .route(
+            "/",
+            axum::routing::get(|| async { "OpenExchange Risk Service" }),
+        )
+        .merge(create_risk_router(risk_state.clone()));
+
+    let server_config = ServerConfig {
+        host: "0.0.0.0".to_string(),
+        http_port: Some(http_port),
+        grpc_port: None,
+        websocket_port: None,
+    };
+
+    let server = CombinedServer::with_http_router(server_config, http_router);
+    server.validate_ports().await?;
+    server.run_with_ctrl_c().await?;
 
     Ok(())
 }
@@ -451,6 +620,145 @@ async fn initialize_instrument_service(
     });
 
     Ok(Some(state))
+}
+
+async fn initialize_oms_service(
+    config: &MasterConfig,
+) -> Result<Option<Arc<OmsApiState>>> {
+    let database_url = std::env::var("OMS_DB_URL")
+        .unwrap_or_else(|_| {
+            config.oms.as_ref()
+                .and_then(|o| o.storage.postgres.as_ref())
+                .map(|pg| {
+                    format!(
+                        "postgresql://{}:{}@{}:{}/{}",
+                        pg.user,
+                        pg.password,
+                        pg.host,
+                        pg.port,
+                        pg.database
+                    )
+                })
+                .unwrap_or_else(|| {
+                    "postgresql://postgres:password@localhost:5432/openexchange".to_string()
+                })
+        });
+
+    info!(
+        "Connecting to OMS database at {}",
+        database_url.split('@').last().unwrap_or(&database_url)
+    );
+
+    match PgPoolOptions::new()
+        .max_connections(10)
+        .connect(&database_url)
+        .await
+    {
+        Ok(pool) => {
+            info!("Connected database");
+
+            let order_store = Arc::new(PostgresOrderStore::new(pool));
+
+            let risk_service_url = get_service_url("risk", 8083);
+            info!("Connecting to Risk service at {}", risk_service_url);
+            
+            let risk_client: Arc<dyn oms::clients::risk::RiskClient> =
+                Arc::new(oms::HttpRiskClient::new(&risk_service_url));
+            let matching_client: Arc<dyn oms::clients::matching::MatchingClient> =
+                Arc::new(MockMatchingClient::new());
+            let address_book = AddressBook::new();
+
+            let manager = OrderManager::new(
+                order_store,
+                risk_client,
+                matching_client,
+                address_book,
+            );
+
+            let state = OmsApiState {
+                manager: Arc::new(manager),
+            };
+
+            Ok(Some(Arc::new(state)))
+        }
+        Err(e) => {
+            warn!("Could not connect to OMS database: {}", e);
+            warn!("OMS service will not be available");
+            warn!("Set OMS_DB_URL environment variable to enable");
+            Ok(None)
+        }
+    }
+}
+
+/// Initialize OMS service (monolith mode - uses HTTP to Risk)
+async fn initialize_oms_service_with_risk(
+    config: &MasterConfig,
+) -> Result<Option<Arc<OmsApiState>>> {
+    // In monolith mode, we still use HTTP client to communicate with Risk Engine
+    // This keeps the architecture consistent and allows for easier future separation
+    let database_url = std::env::var("OMS_DB_URL")
+        .unwrap_or_else(|_| {
+            config.oms.as_ref()
+                .and_then(|o| o.storage.postgres.as_ref())
+                .map(|pg| {
+                    format!(
+                        "postgresql://{}:{}@{}:{}/{}",
+                        pg.user,
+                        pg.password,
+                        pg.host,
+                        pg.port,
+                        pg.database
+                    )
+                })
+                .unwrap_or_else(|| {
+                    "postgresql://postgres:password@localhost:5432/openexchange".to_string()
+                })
+        });
+
+    info!(
+        "Connecting to OMS database at {}",
+        database_url.split('@').last().unwrap_or(&database_url)
+    );
+
+    match PgPoolOptions::new()
+        .max_connections(10)
+        .connect(&database_url)
+        .await
+    {
+        Ok(pool) => {
+            info!("Connected database (monolith mode with Risk Engine)");
+
+            let order_store = Arc::new(PostgresOrderStore::new(pool));
+            
+            // Use HTTP client to connect to Risk Engine (same URL since they're on same server)
+            let risk_service_url = "http://localhost:8083";
+            let risk_client: Arc<dyn oms::clients::risk::RiskClient> =
+                Arc::new(oms::HttpRiskClient::new(risk_service_url));
+            
+            let matching_client: Arc<dyn oms::clients::matching::MatchingClient> =
+                Arc::new(MockMatchingClient::new());
+            let address_book = AddressBook::new();
+
+            let manager = OrderManager::new(
+                order_store,
+                risk_client,
+                matching_client,
+                address_book,
+            );
+
+            let state = OmsApiState {
+                manager: Arc::new(manager),
+            };
+
+            Ok(Some(Arc::new(state)))
+        }
+        Err(e) => {
+            warn!("Could not connect to OMS database: {}", e);
+            warn!("OMS service will not be available");
+            warn!("Set OMS_DB_URL environment variable to enable");
+            Ok(None)
+        }
+    }
 }
 
 async fn validate_command<P: AsRef<Path>>(config_path: P) -> Result<()> {
