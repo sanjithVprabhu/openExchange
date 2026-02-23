@@ -1438,7 +1438,10 @@ name = "market-data"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "common",
+ "ordered-float",
+ "serde",
  "thiserror 1.0.69",
  "tokio",
  "tracing",

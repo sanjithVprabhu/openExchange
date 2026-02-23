@@ -76,6 +76,7 @@ regex = "1.10"
 url = { version = "2.5", features = ["serde"] }
 uuid = { version = "1.6", features = ["v4", "serde"] }
 parking_lot = "0.12"
+ordered-float = "4"
 
 # === HTTP Server (Axum) ===
 axum = { version = "0.7", features = ["ws", "macros"] }

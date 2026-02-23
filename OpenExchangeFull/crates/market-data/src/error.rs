@@ -24,4 +24,15 @@ pub enum MarketDataError {
     /// Subscription error
     #[error("Subscription error: {0}")]
     Subscription(String),
+
+    /// Invalid input for calculation
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
+
+    /// Calculation error
+    #[error("Calculation error: {0}")]
+    CalculationError(String),
 }
+
+/// Result type for market data operations
+pub type Result<T> = std::result::Result<T, MarketDataError>;

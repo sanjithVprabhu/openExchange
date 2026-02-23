@@ -12,6 +12,9 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
+ordered-float = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
 
 [lints]
 workspace = true
