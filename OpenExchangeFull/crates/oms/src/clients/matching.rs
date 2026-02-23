@@ -114,11 +114,33 @@ impl MatchingClient for MockMatchingClient {
 pub mod http {
     use async_trait::async_trait;
     use reqwest::Client;
+    use serde::{Deserialize, Serialize};
     use uuid::Uuid;
     use crate::types::Order;
+    use common::types::Side as OrderSide;
     use crate::error::OmsError;
     use crate::store::traits::OmsResult;
     use super::MatchingClient;
+    use common::types::TimeInForce as CommonTimeInForce;
+
+    /// Request format for matching engine API
+    #[derive(Debug, Serialize)]
+    struct SubmitOrderRequest {
+        instrument_id: String,
+        order_id: Option<Uuid>,
+        user_id: Uuid,
+        side: String,
+        price: f64,
+        quantity: u32,
+        time_in_force: Option<String>,
+    }
+
+    /// Response from matching engine
+    #[derive(Debug, Deserialize)]
+    struct SubmitOrderResponse {
+        success: bool,
+        message: Option<String>,
+    }
 
     /// HTTP-based matching client
     pub struct HttpMatchingClient {
@@ -140,10 +162,31 @@ pub mod http {
     impl MatchingClient for HttpMatchingClient {
         async fn submit_order(&self, order: &Order) -> OmsResult<()> {
             let url = format!("{}/api/v1/internal/orders", self.base_url);
-            
+
+            let side_str = match order.side {
+                OrderSide::Buy => "buy",
+                OrderSide::Sell => "sell",
+            };
+
+            let tif_str = match order.time_in_force {
+                CommonTimeInForce::Gtc => Some("gtc".to_string()),
+                CommonTimeInForce::Ioc => Some("ioc".to_string()),
+                CommonTimeInForce::Fok => Some("fok".to_string()),
+                CommonTimeInForce::Day => Some("gtc".to_string()), // DAY treated as GTC
+            };
+
+            let request = SubmitOrderRequest {
+                instrument_id: order.instrument_id.clone(),
+                order_id: Some(order.order_id),
+                user_id: order.user_id,
+                side: side_str.to_string(),
+                price: order.price.unwrap_or(0.0),
+                quantity: order.quantity,
+                time_in_force: tif_str,
+            };
             let response = self.client
                 .post(&url)
-                .json(&order)
+                .json(&request)
                 .send()
                 .await
                 .map_err(|e| OmsError::MatchingUnavailable(e.to_string()))?;
@@ -157,7 +200,12 @@ pub mod http {
         }
 
         async fn cancel_order(&self, order_id: Uuid) -> OmsResult<()> {
-            let url = format!("{}/api/v1/internal/orders/{}", self.base_url, order_id);
+            // Note: We need instrument_id for proper cancellation
+            // For now, we'll try a common pattern - this may need refinement
+            // The matching service expects: /api/v1/internal/orders/:instrument_id/:order_id
+            // Since we don't have instrument_id here, we'll use a placeholder
+            // This is a limitation - the client should ideally know the instrument
+            let url = format!("{}/api/v1/internal/orders/__unknown__/{}", self.base_url, order_id);
             
             let response = self.client
                 .delete(&url)

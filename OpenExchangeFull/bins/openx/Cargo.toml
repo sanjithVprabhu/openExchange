@@ -20,6 +20,7 @@ instrument = { workspace = true }
 oms = { workspace = true, features = ["postgres", "api", "client"] }
 risk-engine = { workspace = true, features = ["api"] }
 common = { workspace = true }
+matching-engine = { workspace = true, features = ["api"] }
 
 # Web framework
 axum = { workspace = true }
@@ -33,12 +34,16 @@ clap = { workspace = true }
 # Async runtime
 tokio = { workspace = true }
 tokio-util = { workspace = true }
+async-trait = { workspace = true }
 
 # Error handling
 anyhow = { workspace = true }
 
 # Logging
 tracing = { workspace = true }
+
+# UUID
+uuid = { workspace = true }
 
 [lints]
 workspace = true

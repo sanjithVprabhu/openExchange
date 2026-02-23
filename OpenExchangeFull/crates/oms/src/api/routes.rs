@@ -10,7 +10,7 @@ use crate::api::handlers::{OmsApiState, health_handler, create_order, list_order
 /// Create the OMS router
 pub fn create_router(state: Arc<OmsApiState>) -> Router {
     Router::new()
-        .route("/health", get(health_handler))
+        .route("/api/v1/oms/health", get(health_handler))
         .route(
             "/api/v1/:env/orders",
             post(create_order).get(list_orders),

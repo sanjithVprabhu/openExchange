@@ -5,6 +5,7 @@
 //! the exchange.
 
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use cli::{Cli, Commands, DeploymentMode};
 use config::{generate_default_config, load_config, save_config, validate_config, MasterConfig};
 use instrument::api::handlers::InstrumentApiState;
@@ -14,20 +15,112 @@ use instrument::worker::service::{InstrumentWorker, StaticSpotPriceProvider};
 use observability::{init_logging, LogFormat};
 use server::{ports, CombinedServer, ServerConfig, ServerExt};
 use common::addressbook::AddressBook;
+use common::types::{Side, TimeInForce as CommonTimeInForce};
 use oms::{
     OrderManager, PostgresOrderStore, MockMatchingClient,
     api::{handlers::OmsApiState, routes::create_router as create_oms_router, forwarding::OmsForwardingState, forwarding::OmsForwarder},
+    clients::matching::http::HttpMatchingClient,
 };
 use risk_engine::{
     MarginConfig, RiskEngine,
     api::{RiskApiState, create_router as create_risk_router},
 };
+use matching_engine::{
+    domain::{BookOrder, OrderSide, TimeInForce as MeTimeInForce},
+    engine::MatchingEngine,
+    api::create_dyn_router,
+    store::{create_store_from_config, InMemoryStore, MatchingStore},
+    circuit_breaker::CircuitBreakerConfig,
+};
 use sqlx::postgres::PgPoolOptions;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use tokio::sync::watch;
+use tokio::sync::{watch, RwLock};
 use tracing::{debug, error, info, warn};
+use uuid::Uuid;
+
+// ==================== Monolith Matching Client ====================
+
+/// A matching client that runs in-process (monolith mode)
+/// Wraps the matching engine directly without network overhead
+pub struct MonolithMatchingClient {
+    engine: Arc<RwLock<MatchingEngine>>,
+}
+
+impl MonolithMatchingClient {
+    /// Create a new monolith matching client
+    pub fn new(engine: MatchingEngine) -> Self {
+        Self {
+            engine: Arc::new(RwLock::new(engine)),
+        }
+    }
+
+    /// Convert OMS order to matching engine BookOrder
+    fn oms_to_book_order(order: &oms::types::Order) -> BookOrder {
+        let side = match order.side {
+            Side::Buy => OrderSide::Buy,
+            Side::Sell => OrderSide::Sell,
+        };
+
+        let time_in_force = match order.time_in_force {
+            CommonTimeInForce::Gtc => MeTimeInForce::Gtc,
+            CommonTimeInForce::Ioc => MeTimeInForce::Ioc,
+            CommonTimeInForce::Fok => MeTimeInForce::Fok,
+            CommonTimeInForce::Day => MeTimeInForce::Gtc, // DAY treated as GTC
+        };
+
+        BookOrder::new(
+            order.order_id,
+            order.user_id,
+            side,
+            order.price.unwrap_or(0.0),
+            order.quantity,
+            0, // sequence - engine assigns
+            time_in_force,
+        )
+        .with_instrument_id(order.instrument_id.clone())
+    }
+}
+
+#[async_trait]
+impl oms::clients::matching::MatchingClient for MonolithMatchingClient {
+    async fn submit_order(&self, order: &oms::types::Order) -> oms::store::traits::OmsResult<()> {
+        let book_order = Self::oms_to_book_order(order);
+
+        let mut engine = self.engine.write().await;
+        let result = engine.match_order(book_order);
+
+        if result.has_trades() {
+            info!(
+                order_id = %order.order_id,
+                trades = result.trades.len(),
+                filled = result.filled_quantity(),
+                "Order matched"
+            );
+        }
+
+        Ok(())
+    }
+
+    async fn cancel_order(&self, order_id: Uuid) -> oms::store::traits::OmsResult<()> {
+        let mut engine = self.engine.write().await;
+        // Note: We'd need instrument_id to properly cancel - for now iterate all books
+        for instrument_id in engine.instruments() {
+            engine.cancel_order(&instrument_id, order_id);
+        }
+        Ok(())
+    }
+
+    async fn modify_order(
+        &self,
+        old_order_id: Uuid,
+        new_order: &oms::types::Order,
+    ) -> oms::store::traits::OmsResult<()> {
+        self.cancel_order(old_order_id).await?;
+        self.submit_order(new_order).await
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -159,8 +252,10 @@ async fn start_service_with_ports(
         DeploymentMode::Risk => {
             start_risk_service(config, http_port).await
         }
-        DeploymentMode::Matching | DeploymentMode::Wallet 
-        | DeploymentMode::Settlement | DeploymentMode::Market => {
+        DeploymentMode::Matching => {
+            start_matching_service(config, http_port).await
+        }
+        DeploymentMode::Wallet | DeploymentMode::Settlement | DeploymentMode::Market => {
             // Future: start_other_service(config, http_port, grpc_port, ws_port, mode).await
             todo!("Service '{}' not yet implemented", mode.as_str())
         }
@@ -471,6 +566,70 @@ async fn start_risk_service(
     Ok(())
 }
 
+/// Start matching service (standalone node).
+///
+/// This runs as a standalone service that handles order matching.
+/// OMS and other services communicate with it via HTTP.
+async fn start_matching_service(
+    config: &MasterConfig,
+    http_port: u16,
+) -> Result<()> {
+    info!(
+        "Starting Matching Service (HTTP on port {})",
+        http_port
+    );
+
+    // Create store based on configuration
+    let store: Arc<dyn MatchingStore + Send + Sync> = if let Some(ref me_config) = config.matching_engine {
+        match create_store_from_config(&me_config.orderbook_store).await {
+            Ok(s) => {
+                info!("Created matching store from config");
+                let boxed: Box<dyn MatchingStore> = s;
+                let dyn_store: Box<dyn MatchingStore + Send + Sync> = boxed;
+                Arc::from(dyn_store)
+            }
+            Err(e) => {
+                warn!("Failed to create store from config: {}, using in-memory", e);
+                Arc::new(InMemoryStore::new()) as Arc<dyn MatchingStore + Send + Sync>
+            }
+        }
+    } else {
+        info!("No matching engine config, using in-memory store");
+        Arc::new(InMemoryStore::new()) as Arc<dyn MatchingStore + Send + Sync>
+    };
+
+    let http_router: axum::Router = axum::Router::new()
+        .route(
+            "/health",
+            axum::routing::get(server::health::simple_health_handler),
+        )
+        .route(
+            "/",
+            axum::routing::get(|| async { "OpenExchange Matching Service" }),
+        )
+        .merge(create_dyn_router(store));
+
+    let server_config = ServerConfig {
+        host: "0.0.0.0".to_string(),
+        http_port: Some(http_port),
+        grpc_port: None,
+        websocket_port: None,
+    };
+
+    let server = CombinedServer::with_http_router(server_config, http_router);
+    server.validate_ports().await?;
+
+    info!("Matching service started successfully");
+    info!("  Submit orders: POST /api/v1/internal/orders");
+    info!("  Cancel orders: DELETE /api/v1/internal/orders/:instrument_id/:order_id");
+    info!("  Order book:    GET /api/v1/internal/books/:instrument_id");
+    info!("  Health check:  GET /api/v1/matching/health");
+
+    server.run_with_ctrl_c().await?;
+
+    Ok(())
+}
+
 /// Get service HTTP URL from environment variable.
 ///
 /// Used by gateway to forward requests to backend services.
@@ -664,8 +823,13 @@ async fn initialize_oms_service(
             
             let risk_client: Arc<dyn oms::clients::risk::RiskClient> =
                 Arc::new(oms::HttpRiskClient::new(&risk_service_url));
+
+            // In distributed mode, connect to matching service via HTTP
+            let matching_service_url = get_service_url("matching", 8084);
+            info!("Connecting to Matching service at {}", matching_service_url);
+            
             let matching_client: Arc<dyn oms::clients::matching::MatchingClient> =
-                Arc::new(MockMatchingClient::new());
+                Arc::new(HttpMatchingClient::new(&matching_service_url));
             let address_book = AddressBook::new();
 
             let manager = OrderManager::new(
@@ -688,6 +852,36 @@ async fn initialize_oms_service(
             Ok(None)
         }
     }
+}
+
+/// Initialize the matching engine based on configuration
+async fn initialize_matching_engine(
+    config: &MasterConfig,
+) -> Result<MatchingEngine> {
+    let store_type = config.matching_engine.as_ref()
+        .map(|m| m.orderbook_store.store_type.as_str())
+        .unwrap_or("inmemory");
+
+    info!("Initializing matching engine with store type: {}", store_type);
+
+    // Create engine with circuit breakers and metrics
+    let mut engine = if let Some(ref me_config) = config.matching_engine {
+        let has_cb = me_config.circuit_breakers.enabled;
+        
+        if has_cb {
+            info!("Circuit breakers enabled");
+            let cb = CircuitBreakerConfig::from(&me_config.circuit_breakers);
+            MatchingEngine::new_with_all(cb)
+        } else {
+            MatchingEngine::new_with_metrics()
+        }
+    } else {
+        MatchingEngine::new_with_metrics()
+    };
+
+    info!("Matching engine initialized successfully");
+
+    Ok(engine)
 }
 
 /// Initialize OMS service (monolith mode - uses HTTP to Risk)
@@ -729,14 +923,40 @@ async fn initialize_oms_service_with_risk(
             info!("Connected database (monolith mode with Risk Engine)");
 
             let order_store = Arc::new(PostgresOrderStore::new(pool));
-            
+
             // Use HTTP client to connect to Risk Engine (same URL since they're on same server)
             let risk_service_url = "http://localhost:8083";
             let risk_client: Arc<dyn oms::clients::risk::RiskClient> =
                 Arc::new(oms::HttpRiskClient::new(risk_service_url));
-            
+
+            // Initialize matching engine based on config
+            let matching_engine = match initialize_matching_engine(config).await {
+                Ok(engine) => engine,
+                Err(e) => {
+                    warn!("Failed to initialize matching engine: {}", e);
+                    warn!("Using MockMatchingClient as fallback");
+                    let matching_client: Arc<dyn oms::clients::matching::MatchingClient> =
+                        Arc::new(MockMatchingClient::new());
+                    let address_book = AddressBook::new();
+
+                    let manager = OrderManager::new(
+                        order_store,
+                        risk_client,
+                        matching_client,
+                        address_book,
+                    );
+
+                    let state = OmsApiState {
+                        manager: Arc::new(manager),
+                    };
+
+                    return Ok(Some(Arc::new(state)));
+                }
+            };
+
+            // Use MonolithMatchingClient for in-process matching
             let matching_client: Arc<dyn oms::clients::matching::MatchingClient> =
-                Arc::new(MockMatchingClient::new());
+                Arc::new(MonolithMatchingClient::new(matching_engine));
             let address_book = AddressBook::new();
 
             let manager = OrderManager::new(

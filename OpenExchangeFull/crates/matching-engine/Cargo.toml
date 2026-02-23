@@ -7,9 +7,38 @@ license.workspace = true
 description = "Order matching engine for OpenExchange"
 
 [dependencies]
+# Internal crates
 common = { workspace = true }
+config = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+
+# Serialization
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+# Utilities
+uuid = { workspace = true, features = ["v4", "serde"] }
+chrono = { workspace = true, features = ["serde"] }
+ordered-float = "4.0"
+
+# Async
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["sync", "rt-multi-thread"] }
+
+# Redis
+redis = { version = "0.25", features = ["tokio-comp", "connection-manager", "json"] }
+
+# HTTP Server (optional)
+axum = { workspace = true, optional = true }
+tower = { workspace = true, optional = true }
+tower-http = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+
+[features]
+default = []
+api = ["dep:axum", "dep:tower", "dep:tower-http"]
+client = ["dep:reqwest"]
 
 [lints]
 workspace = true

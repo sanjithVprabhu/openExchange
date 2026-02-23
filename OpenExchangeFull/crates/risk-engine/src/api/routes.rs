@@ -8,7 +8,7 @@ use super::handlers::*;
 
 pub fn create_router(state: Arc<RiskApiState>) -> Router {
     Router::new()
-        .route("/health", get(health_handler))
+        .route("/api/v1/risk/health", get(health_handler))
         .route(
             "/api/v1/internal/risk/check",
             post(check_risk),
